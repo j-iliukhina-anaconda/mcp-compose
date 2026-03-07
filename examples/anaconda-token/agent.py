@@ -236,15 +236,15 @@ def main():
             try:
                 # Import MCP SDK client for streamable HTTP
                 from mcp import ClientSession
-                from mcp.client.streamable_http import streamablehttp_client
-                
+                from mcp_compose.http_client import streamable_http_client_compat
+
                 # Build headers - only add Authorization if we have a token
                 headers = {}
                 if access_token:
                     headers["Authorization"] = f"Bearer {access_token}"
-                
-                # Connect using Streamable HTTP client
-                async with streamablehttp_client(
+
+                # Connect using Streamable HTTP client (non-deprecated)
+                async with streamable_http_client_compat(
                     "http://localhost:8080/mcp",
                     headers=headers if headers else None
                 ) as (read, write, _):
