@@ -25,6 +25,9 @@ from .process_manager import ProcessManager
 logger = logging.getLogger(__name__)
 
 
+from .http_client import streamable_http_client_compat
+
+
 def setup_logging(verbose: bool = False) -> None:
     """Set up logging configuration."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -783,8 +786,7 @@ async def run_server(config, args: argparse.Namespace) -> int:
                             )
 
                             if protocol_value == "streamable-http":
-                                # Use native MCP streamablehttp_client
-                                from mcp.client.streamable_http import streamablehttp_client
+                                # Use non-deprecated streamable_http_client via helper
 
                                 # Build headers for authentication
                                 headers = {}
@@ -800,7 +802,7 @@ async def run_server(config, args: argparse.Namespace) -> int:
                                     else:
                                         headers["Authorization"] = server_config.auth_token
 
-                                async with streamablehttp_client(
+                                async with streamable_http_client_compat(
                                     url=server_config.url,
                                     headers=headers if headers else None,
                                     timeout=float(server_config.timeout),
@@ -841,9 +843,6 @@ async def run_server(config, args: argparse.Namespace) -> int:
                                                 async def streamable_http_tool_proxy(**kwargs):
                                                     """Proxy function for streamable HTTP tool."""
                                                     from mcp import ClientSession
-                                                    from mcp.client.streamable_http import (
-                                                        streamablehttp_client,
-                                                    )
 
                                                     # Build headers for authentication
                                                     hdrs = {}
@@ -866,7 +865,7 @@ async def run_server(config, args: argparse.Namespace) -> int:
                                                                 http_config.auth_token
                                                             )
 
-                                                    async with streamablehttp_client(
+                                                    async with streamable_http_client_compat(
                                                         url=http_config.url,
                                                         headers=hdrs if hdrs else None,
                                                         timeout=float(http_config.timeout),
@@ -1077,7 +1076,6 @@ async def run_server(config, args: argparse.Namespace) -> int:
             import time
 
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
 
             from .config import StreamableHttpProxiedServerConfig
 
@@ -1131,7 +1129,7 @@ async def run_server(config, args: argparse.Namespace) -> int:
                                 else:
                                     headers["Authorization"] = server_config.auth_token
 
-                            async with streamablehttp_client(
+                            async with streamable_http_client_compat(
                                 url=server_config.url,
                                 headers=headers if headers else None,
                                 timeout=float(server_config.timeout),
@@ -1182,9 +1180,6 @@ async def run_server(config, args: argparse.Namespace) -> int:
                                         async def streamable_http_tool_proxy(**kwargs):
                                             """Proxy function for streamable HTTP tool."""
                                             from mcp import ClientSession
-                                            from mcp.client.streamable_http import (
-                                                streamablehttp_client,
-                                            )
 
                                             # Build headers for authentication
                                             hdrs = {}
@@ -1200,7 +1195,7 @@ async def run_server(config, args: argparse.Namespace) -> int:
                                                 else:
                                                     hdrs["Authorization"] = http_config.auth_token
 
-                                            async with streamablehttp_client(
+                                            async with streamable_http_client_compat(
                                                 url=http_config.url,
                                                 headers=hdrs if hdrs else None,
                                                 timeout=float(http_config.timeout),

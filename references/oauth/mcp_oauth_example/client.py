@@ -30,8 +30,7 @@ from .oauth_client import OAuthClient
 # MCP client imports
 try:
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-    import httpx
+    from mcp_compose.http_client import streamable_http_client_compat
     HAS_MCP = True
 except ImportError:
     HAS_MCP = False
@@ -91,22 +90,18 @@ class MCPClient:
                 # Disable SSL verification for localhost (development with mkcert)
                 server_url = self.oauth.get_server_url()
                 verify_ssl = not server_url.startswith("https://localhost")
-                
-                # Create HTTP client with auth headers
-                async with httpx.AsyncClient(
+
+                # Connect using non-deprecated streamable HTTP client
+                async with streamable_http_client_compat(
+                    f"{self.oauth.get_server_url()}/mcp",
                     headers={"Authorization": f"Bearer {self.access_token}"},
                     timeout=30.0,
-                    verify=verify_ssl
-                ) as http_client:
-                    # Connect using MCP SDK's streamable HTTP client
-                    async with streamablehttp_client(
-                        f"{self.oauth.get_server_url()}/mcp",
-                        http_client=http_client
-                    ) as (read_stream, write_stream):
-                        async with ClientSession(read_stream, write_stream) as session:
-                            await session.initialize()
-                            tools_list = await session.list_tools()
-                            return tools_list
+                    verify=verify_ssl,
+                ) as (read_stream, write_stream, _):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        tools_list = await session.list_tools()
+                        return tools_list
             
             # Run async function
             tools_list = asyncio.run(_list_tools())
@@ -153,44 +148,40 @@ class MCPClient:
             # Disable SSL verification for localhost (development with mkcert)
             server_url = self.oauth.get_server_url()
             verify_ssl = not server_url.startswith("https://localhost")
-            
-            # Create HTTP client with auth headers
-            async with httpx.AsyncClient(
+
+            # Connect using non-deprecated streamable HTTP client
+            async with streamable_http_client_compat(
+                f"{self.oauth.get_server_url()}/mcp",
                 headers={"Authorization": f"Bearer {self.access_token}"},
                 timeout=30.0,
-                verify=verify_ssl
-            ) as http_client:
-                # Connect to MCP server via HTTP streaming
-                async with streamablehttp_client(
-                    f"{self.oauth.get_server_url()}/mcp",
-                    http_client=http_client
-                ) as (read_stream, write_stream):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        # Initialize the session
-                        await session.initialize()
-                        
-                        # Call the tool
-                        result = await session.call_tool(tool_name, arguments)
-                        
-                        # Extract content from result
-                        if hasattr(result, 'content'):
-                            content = result.content
-                            if isinstance(content, list) and len(content) > 0:
-                                # Get the text content from the first item
-                                first_content = content[0]
-                                if hasattr(first_content, 'text'):
-                                    result_text = first_content.text
-                                else:
-                                    result_text = str(first_content)
+                verify=verify_ssl,
+            ) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    # Initialize the session
+                    await session.initialize()
+
+                    # Call the tool
+                    result = await session.call_tool(tool_name, arguments)
+
+                    # Extract content from result
+                    if hasattr(result, 'content'):
+                        content = result.content
+                        if isinstance(content, list) and len(content) > 0:
+                            # Get the text content from the first item
+                            first_content = content[0]
+                            if hasattr(first_content, 'text'):
+                                result_text = first_content.text
                             else:
-                                result_text = str(content)
+                                result_text = str(first_content)
                         else:
-                            result_text = str(result)
-                        
-                        print(f"✅ Tool invoked successfully")
-                        print(f"   Result: {result_text}")
-                        
-                        return result
+                            result_text = str(content)
+                    else:
+                        result_text = str(result)
+
+                    print(f"✅ Tool invoked successfully")
+                    print(f"   Result: {result_text}")
+
+                    return result
         
         except Exception as e:
             print(f"❌ Error invoking tool: {e}")
