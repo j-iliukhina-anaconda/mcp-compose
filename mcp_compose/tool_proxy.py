@@ -41,6 +41,23 @@ class ToolProxy:
         self.process_manager = process_manager
         self.composer = composer
         self.server_tools: dict[str, dict[str, Any]] = {}
+        # Track request IDs and locks per process for proper request/response matching
+        self._request_id_counter: dict[str, int] = {}  # process_name -> next_id
+        self._process_locks: dict[str, asyncio.Lock] = {}  # process_name -> lock
+
+    def _get_next_request_id(self, process_name: str) -> int:
+        """Get the next unique request ID for a process."""
+        if process_name not in self._request_id_counter:
+            self._request_id_counter[process_name] = 1
+        request_id = self._request_id_counter[process_name]
+        self._request_id_counter[process_name] += 1
+        return request_id
+
+    def _get_process_lock(self, process_name: str) -> asyncio.Lock:
+        """Get or create a lock for serializing requests to a process."""
+        if process_name not in self._process_locks:
+            self._process_locks[process_name] = asyncio.Lock()
+        return self._process_locks[process_name]
 
     async def discover_tools(self, server_name: str, process: Process) -> None:
         """
@@ -56,7 +73,7 @@ class ToolProxy:
             # Send MCP initialize request
             init_request = {
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": self._get_next_request_id(process.name),
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2024-11-05",
@@ -83,7 +100,12 @@ class ToolProxy:
             await self._send_notification(process, initialized_notification)
 
             # Request tools list
-            tools_request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+            tools_request = {
+                "jsonrpc": "2.0",
+                "id": self._get_next_request_id(process.name),
+                "method": "tools/list",
+                "params": {},
+            }
 
             logger.debug(f"Requesting tools list from {server_name}")
             tools_response = await self._send_request(process, tools_request)
@@ -186,9 +208,10 @@ class ToolProxy:
                 try:
                     logger.info(f"Tool {tl_name} called with arguments: {kwargs}")
 
+                    request_id = self._get_next_request_id(proc.name)
                     request = {
                         "jsonrpc": "2.0",
-                        "id": "tool-call",
+                        "id": request_id,
                         "method": "tools/call",
                         "params": {"name": tl_name, "arguments": kwargs},
                     }
@@ -284,14 +307,17 @@ class ToolProxy:
         self.composer.source_mapping[prefixed_name] = server_name
 
     async def _send_request(
-        self, process: Process, request: dict[str, Any], timeout: float = 5.0
+        self, process: Process, request: dict[str, Any], timeout: float = 30.0
     ) -> dict[str, Any] | None:
         """
         Send a JSON-RPC request to a child process and wait for response.
 
+        Uses a lock to serialize requests to the same process and matches
+        responses by JSON-RPC ID to handle any out-of-order or unexpected output.
+
         Args:
             process: Process instance to send to
-            request: JSON-RPC request dict
+            request: JSON-RPC request dict (must include 'id' field)
             timeout: Timeout in seconds
 
         Returns:
@@ -301,32 +327,87 @@ class ToolProxy:
             logger.error(f"Process {process.name} has no stdin/stdout")
             return None
 
-        try:
-            # Send request
-            request_json = json.dumps(request) + "\n"
-            process._stdin_writer.write(request_json.encode())
-            await process._stdin_writer.drain()
-
-            # Read response with timeout
-            try:
-                response_line = await asyncio.wait_for(
-                    process._stdout_reader.readline(), timeout=timeout
-                )
-
-                if response_line:
-                    response = json.loads(response_line.decode().strip())
-                    return response
-                else:
-                    logger.warning(f"Empty response from {process.name}")
-                    return None
-
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout waiting for response from {process.name}")
-                return None
-
-        except Exception as e:
-            logger.error(f"Error sending request to {process.name}: {e}")
+        request_id = request.get("id")
+        if request_id is None:
+            logger.error(f"Request to {process.name} missing 'id' field")
             return None
+
+        # Use lock to serialize requests to this process
+        lock = self._get_process_lock(process.name)
+
+        async with lock:
+            try:
+                # Send request
+                request_json = json.dumps(request) + "\n"
+                process._stdin_writer.write(request_json.encode())
+                await process._stdin_writer.drain()
+                logger.debug(f"Sent request {request_id} to {process.name}")
+
+                # Read responses until we get the matching ID or timeout
+                start_time = asyncio.get_event_loop().time()
+                while True:
+                    remaining_timeout = timeout - (asyncio.get_event_loop().time() - start_time)
+                    if remaining_timeout <= 0:
+                        logger.warning(
+                            f"Timeout waiting for response {request_id} from {process.name}"
+                        )
+                        return None
+
+                    try:
+                        response_line = await asyncio.wait_for(
+                            process._stdout_reader.readline(), timeout=remaining_timeout
+                        )
+
+                        if not response_line:
+                            logger.warning(f"Empty response from {process.name}")
+                            return None
+
+                        line_str = response_line.decode().strip()
+                        if not line_str:
+                            # Skip empty lines
+                            continue
+
+                        try:
+                            response = json.loads(line_str)
+                        except json.JSONDecodeError as e:
+                            # Log non-JSON output (might be debug/log output) and continue
+                            logger.debug(
+                                f"Non-JSON output from {process.name}: {line_str[:200]}"
+                            )
+                            continue
+
+                        # Check if this is a notification (no 'id' field)
+                        if "id" not in response:
+                            logger.debug(
+                                f"Received notification from {process.name}: {response.get('method', 'unknown')}"
+                            )
+                            continue
+
+                        # Check if ID matches
+                        response_id = response.get("id")
+                        if response_id == request_id:
+                            logger.debug(
+                                f"Received matching response {request_id} from {process.name}"
+                            )
+                            return response
+                        else:
+                            # Log mismatched response - this shouldn't happen with proper locking
+                            # but handle it gracefully
+                            logger.warning(
+                                f"Response ID mismatch from {process.name}: "
+                                f"expected {request_id}, got {response_id}"
+                            )
+                            continue
+
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"Timeout waiting for response {request_id} from {process.name}"
+                        )
+                        return None
+
+            except Exception as e:
+                logger.error(f"Error sending request to {process.name}: {e}")
+                return None
 
     async def _send_notification(self, process: Process, notification: dict[str, Any]) -> None:
         """
