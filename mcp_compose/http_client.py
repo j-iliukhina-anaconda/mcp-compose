@@ -7,9 +7,19 @@ HTTP client utilities for MCP Compose.
 Provides compatibility wrapper for the MCP SDK's streamable HTTP client.
 """
 
+import logging
 import httpx
 from contextlib import asynccontextmanager
 from mcp.client.streamable_http import streamable_http_client
+
+logger = logging.getLogger(__name__)
+
+# Check if HTTP/2 is available
+try:
+    import h2  # noqa: F401
+    HTTP2_AVAILABLE = True
+except ImportError:
+    HTTP2_AVAILABLE = False
 
 
 def streamable_http_client_compat(url, headers=None, timeout=30, verify=True):
@@ -50,12 +60,18 @@ def streamable_http_client_compat(url, headers=None, timeout=30, verify=True):
             max_keepalive_connections=20,
             keepalive_expiry=5.0,
         )
+        # Use HTTP/2 if available (requires h2 package: pip install httpx[http2])
+        use_http2 = HTTP2_AVAILABLE
+        if use_http2:
+            logger.debug("Using HTTP/2 for downstream connections")
+        else:
+            logger.debug("HTTP/2 not available (h2 package not installed), using HTTP/1.1")
         async with httpx.AsyncClient(
             headers=headers,
             timeout=httpx.Timeout(float(timeout)),
             verify=verify,
             limits=limits,
-            http2=True,  # Use HTTP/2 for better connection handling
+            http2=use_http2,
         ) as http_client:
             async with streamable_http_client(
                 url=url,
