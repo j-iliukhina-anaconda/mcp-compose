@@ -44,10 +44,18 @@ def streamable_http_client_compat(url, headers=None, timeout=30, verify=True):
 
     @asynccontextmanager
     async def _context():
+        # Use explicit limits to prevent connection exhaustion
+        limits = httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=5.0,
+        )
         async with httpx.AsyncClient(
             headers=headers,
             timeout=httpx.Timeout(float(timeout)),
             verify=verify,
+            limits=limits,
+            http2=True,  # Use HTTP/2 for better connection handling
         ) as http_client:
             async with streamable_http_client(
                 url=url,
